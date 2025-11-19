@@ -1,12 +1,17 @@
 package com.example.auth.security;
 
 import com.example.auth.exception.JwtAuthenticationException;
+import io.jsonwebtoken.ExpiredJwtException;
 import io.jsonwebtoken.JwtException;
+import io.jsonwebtoken.MalformedJwtException;
+import io.jsonwebtoken.UnsupportedJwtException;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
+import org.springframework.security.authentication.BadCredentialsException;
+import org.springframework.security.authentication.InsufficientAuthenticationException;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.AuthenticationException;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -16,58 +21,59 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 import java.io.IOException;
+
 @Component
 @RequiredArgsConstructor
 public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
     private final JwtUtil jwtUtil;
     private final CustomUserDetailsService customUserDetailsService;
-    private final AuthEntryPointJwt authEntryPointJwt; // ✅ Inject your entry point
 
     @Override
     protected void doFilterInternal(HttpServletRequest request,
                                     HttpServletResponse response,
-                                    FilterChain filterChain)
+                                    FilterChain chain)
             throws ServletException, IOException {
 
-        final String authHeader = request.getHeader("Authorization");
+        final String header = request.getHeader("Authorization");
 
-        if (authHeader == null || !authHeader.startsWith("Bearer ")) {
-            filterChain.doFilter(request, response);
+        if (header == null || !header.startsWith("Bearer ")) {
+            chain.doFilter(request, response);
             return;
         }
 
-        final String token = authHeader.substring(7);
+        final String token = header.substring(7);
 
         try {
             String email = jwtUtil.extractEmail(token);
 
-            if (email != null && SecurityContextHolder.getContext().getAuthentication() == null) {
-                UserDetails userDetails = customUserDetailsService.loadUserByUsername(email);
+            if (email != null &&
+                    SecurityContextHolder.getContext().getAuthentication() == null) {
+
+                UserDetails userDetails =
+                        customUserDetailsService.loadUserByUsername(email);
 
                 if (!jwtUtil.isTokenValid(token)) {
-                    throw new JwtAuthenticationException("JWT token is expired or invalid");
+                    throw new BadCredentialsException("Invalid or expired JWT");
                 }
 
-                UsernamePasswordAuthenticationToken authToken =
-                        new UsernamePasswordAuthenticationToken(userDetails, null, userDetails.getAuthorities());
-                authToken.setDetails(new WebAuthenticationDetailsSource().buildDetails(request));
-                SecurityContextHolder.getContext().setAuthentication(authToken);
+                UsernamePasswordAuthenticationToken auth =
+                        new UsernamePasswordAuthenticationToken(
+                                userDetails,
+                                null,
+                                userDetails.getAuthorities());
+
+                auth.setDetails(new WebAuthenticationDetailsSource().buildDetails(request));
+                SecurityContextHolder.getContext().setAuthentication(auth);
             }
 
-            filterChain.doFilter(request, response);
+            chain.doFilter(request, response);
 
-        } catch (JwtAuthenticationException ex) {
-            // ✅ Send the JSON response directly via your entry point
+        } catch (Exception e) {
+            request.setAttribute("jwt_exception", e);
             SecurityContextHolder.clearContext();
-            authEntryPointJwt.commence(request, response, ex);
-        } catch (JwtException ex) {
-            // Catch lower-level JWT parsing issues
-            SecurityContextHolder.clearContext();
-            authEntryPointJwt.commence(
-                    request, response,
-                    new JwtAuthenticationException("Invalid or corrupted JWT token: " + ex.getMessage(), ex)
-            );
+            throw new InsufficientAuthenticationException("JWT authentication failed", e);
         }
     }
 }
+
